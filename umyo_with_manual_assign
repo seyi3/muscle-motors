@@ -1,0 +1,175 @@
+#include <SPI.h>
+#include <Wire.h>
+#include <Adafruit_MotorShield.h>
+#include <uMyo_RF24.h>
+
+Adafruit_MotorShield AFMS = Adafruit_MotorShield(); 
+Adafruit_DCMotor *L_MOTOR = AFMS.getMotor(4);
+Adafruit_DCMotor *R_MOTOR = AFMS.getMotor(3);
+
+const int THRESHOLD = 200; 
+const int MAX_MUSCLE = 400;
+uint32_t last_update_ms = 0;
+
+int leftHand_index = -1;
+int rightHand_index = -1;
+int brake_and_reverse_index = -1;
+
+void setup() {
+    Serial.begin(115200);
+    delay(1000);
+    uMyo.begin(6, 5);
+    if(!AFMS.begin()) {
+        Serial.println("Motor Shield not found!");
+        while (1);
+    }
+    L_MOTOR->setSpeed(0);
+    R_MOTOR->setSpeed(0);
+    L_MOTOR->run(RELEASE);
+    R_MOTOR->run(RELEASE);
+    Serial.println("ready");
+}
+
+void loop() {
+    uMyo.run(); 
+    if(millis() - last_update_ms > 40) {
+        int dev_count = uMyo.getDeviceCount();
+        if(dev_count == 3) {
+            // Sensor auto-assignment / setup
+            ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+            //
+            // if(leftHand_index == -1 || rightHand_index == -1 || brake_and_reverse_index == -1) {
+            //     Serial.println("Sensor (re)assignment process will begin momentarily, make sure your arms are currently in a resting position.");
+            //     delay(3000);
+            //     Serial.println();
+            //     Serial.println("Setup instructions:");
+            //     Serial.println();
+            //     int leftHand = uMyo.getMuscleLevel(0);
+            //     int rightHand = uMyo.getMuscleLevel(1);
+            //     int brake_and_reverse = uMyo.getMuscleLevel(2);
+
+            //     Serial.println("Flex left arm to assign the brake and reverse sensor...");
+            //     while(true) {
+            //         uMyo.run();
+            //         delay(40);
+            //         int leftHand = uMyo.getMuscleLevel(0);
+            //         int rightHand = uMyo.getMuscleLevel(1);
+            //         int brake_and_reverse = uMyo.getMuscleLevel(2);
+            //         if(leftHand > THRESHOLD || rightHand > THRESHOLD || brake_and_reverse > THRESHOLD) {
+            //             brake_and_reverse_index = 0;
+            //             leftHand_index = 1;
+            //             rightHand_index = 2;
+            //             if(rightHand > leftHand && rightHand > brake_and_reverse) {
+            //                 brake_and_reverse_index = 1;
+            //                 leftHand_index = 0;
+            //                 rightHand_index = 2;
+            //             }
+            //             else if(brake_and_reverse > leftHand && brake_and_reverse > rightHand) {
+            //                 brake_and_reverse_index = 2;
+            //                 leftHand_index = 0;
+            //                 rightHand_index = 1;
+            //             }
+            //             break;
+            //         }
+            //     }
+            //     Serial.println("Brake and reverse sensor assigned.");
+            //     Serial.println("Please wait...");
+            //     Serial.println();
+            //     delay(2000);
+
+            //     Serial.println("Flex right arm forearm to assign the left wheel sensor (flick right wrist downwards)...");
+            //     while(true) {
+            //         uMyo.run();
+            //         delay(40);
+            //         int leftHand = uMyo.getMuscleLevel(leftHand_index);
+            //         int rightHand = uMyo.getMuscleLevel(rightHand_index);
+            //         if(leftHand > THRESHOLD || rightHand > THRESHOLD) {
+            //             if(leftHand > rightHand) {
+            //                 int temp = rightHand_index;
+            //                 rightHand_index = leftHand_index;
+            //                 leftHand_index = temp;
+            //             }
+            //             break;
+            //         }
+            //     }
+            //     Serial.println("Left wheel sensor assigned.");
+            //     Serial.println("Please wait...");
+            //     delay(1000);
+            //     Serial.println();
+            //     Serial.println("Right wheel sensor auto-assigned.");
+            //     Serial.println("Please wait...");
+            //     delay(1000);
+            //     Serial.println();
+            //     Serial.println("Sensor setup complete!");
+            //     delay(1000);
+            //     return;
+            // }
+
+            // int leftHand = uMyo.getMuscleLevel(leftHand_index);
+            // int rightHand = uMyo.getMuscleLevel(rightHand_index);
+            // int brake_and_reverse = uMyo.getMuscleLevel(brake_and_reverse_index);
+
+            /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+            // Simply connects sensors in the order that they are turned on
+            int leftHand = uMyo.getMuscleLevel(1); // right wrist
+            int rightHand = uMyo.getMuscleLevel(2); // right forearm
+            int brake_and_reverse = uMyo.getMuscleLevel(0); // left arm
+
+            // Current setup control idea, dual sensor arm controls left and right wheels and speed
+            // (with wrist up, wrist down, or tensed arm and palm motions/commands)
+            // Single sensor arm will act as a shift-into-reverse when tensed 
+            // and will set the dual sensor arm's commands as reverse commands
+
+            // Manual "e-brake"
+            // Theoretically brakes when readings are crazy high (like physically touching both electrodes on the single sensor arm's sensor)
+            if(brake_and_reverse > 450) { // maybe edit this threshold?
+                L_MOTOR->run(RELEASE);
+                R_MOTOR->run(RELEASE);
+            }
+            else if(brake_and_reverse > THRESHOLD) { // Reverse
+                // Reverses when readings come from both arms
+                if(leftHand > THRESHOLD) { // Left Motor
+                    int l_speed = map(leftHand, THRESHOLD, MAX_MUSCLE, 0, 255);
+                    L_MOTOR->setSpeed(constrain(l_speed, 0, 255));
+                    L_MOTOR->run(BACKWARD);
+                }
+                else {
+                    L_MOTOR->run(RELEASE);
+                }
+                if(rightHand > THRESHOLD) { // Right Motor
+                    int r_speed = map(rightHand, THRESHOLD, MAX_MUSCLE, 0, 255);
+                    R_MOTOR->setSpeed(constrain(r_speed, 0, 255));
+                    R_MOTOR->run(BACKWARD);
+                }
+                else {
+                    R_MOTOR->run(RELEASE);
+                }
+            }
+            else { // Forward motions from videos
+                if(leftHand > THRESHOLD) { // Left Motor
+                    int l_speed = map(leftHand, THRESHOLD, MAX_MUSCLE, 0, 255);
+                    L_MOTOR->setSpeed(constrain(l_speed, 0, 255));
+                    L_MOTOR->run(FORWARD);
+                }
+                else {
+                    L_MOTOR->run(RELEASE);
+                }
+                if(rightHand > THRESHOLD) { // Right Motor
+                    int r_speed = map(rightHand, THRESHOLD, MAX_MUSCLE, 0, 255);
+                    R_MOTOR->setSpeed(constrain(r_speed, 0, 255));
+                    R_MOTOR->run(FORWARD);
+                }
+                else {
+                    R_MOTOR->run(RELEASE);
+                }
+            }
+        }
+        else { // no input, no movement
+            Serial.println("Less than 3 sensors connected, searching for sensors...");
+            L_MOTOR->run(RELEASE);
+            R_MOTOR->run(RELEASE);
+        }
+        last_update_ms = millis();
+    }
+}
