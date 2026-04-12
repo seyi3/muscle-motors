@@ -93,10 +93,36 @@ void process_raw_data_task(void *pvParameters) {
         sum += channel->magnitudes[i];
       }
 
-      channel->avg_muscle_level *= 0.7;
-      channel->avg_muscle_level += 0.3 * (sum);
+      channel->avg_muscle_level *= 0.9;
+      channel->avg_muscle_level += 0.1 * (sum);
+
+      if (id == 0) {
+        float32_t a0 = 1.0;
+        float32_t b0 = 32;
+        float32_t v0 = (&channels[0])->avg_muscle_level - 1824;
+        float32_t v1 = (&channels[1])->avg_muscle_level - 1824;
+        float32_t cleaned = pow(v0, 2.0) / (a0 * v1 + b0);
+        cleaned = constrain(cleaned, 0, 2048);
+        bool thumb = cleaned > 512;
+        Serial.print("Thumb:");
+        Serial.print(thumb);
+        Serial.print(",Cleaned0:");
+        Serial.print(cleaned);
+      } else if (id == 1) {
+        float32_t a1 = 1.0;
+        float32_t b1 = 32;
+        float32_t v0 = (&channels[0])->avg_muscle_level - 1824;
+        float32_t v1 = (&channels[1])->avg_muscle_level - 1824;
+        float32_t cleaned = pow(v1, 2.0) / (a1 * v0 + b1);\
+        cleaned = constrain(cleaned, 0, 2048);
+        bool mrp = cleaned > 256;
+        Serial.print("MRP:");
+        Serial.print(mrp);
+        Serial.print(",Cleaned1:");
+        Serial.print(cleaned);
+      }
       
-      Serial.print(",Min:-64,Max:64,");
+      Serial.print(",Min:0,Max:1,");
       Serial.print("Channel");
       Serial.print(id);
       Serial.print("Average:");
