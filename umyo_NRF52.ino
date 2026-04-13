@@ -45,6 +45,53 @@ void loop() {
         //     delay(1000);
         // }
 
+        // IMU testing with only wrist sensor connected
+        if(dev_count == 1) {
+            float roll = uMyo.getRoll(0);
+            Serial.println(roll);
+            // int wrist = uMyo.getMuscleLevel(0);
+            // if(wrist > THRESHOLD) {
+            if(true) {
+                if(roll < 0 && roll > -1.75) {
+                    R_MOTOR->setSpeed(255);
+                    R_MOTOR->run(FORWARD);
+                    L_MOTOR->run(RELEASE);
+                }
+                else if(roll < -1.75 && roll > -2.75) {
+                    int angle = ((roll * -1) - 1.75) * 255;
+                    L_MOTOR->setSpeed(constrain(angle, 0, 255));
+                    R_MOTOR->setSpeed(255);
+                    R_MOTOR->run(FORWARD);
+                    L_MOTOR->run(FORWARD);
+                    
+                }
+                //else if ((roll < -2.75 && roll > -3.14) || (roll > 2.75 && roll < 3.14)) {
+                else if(roll < -2.75 || roll > 2.75) {
+                    L_MOTOR->setSpeed(255);
+                    L_MOTOR->run(FORWARD);
+                    R_MOTOR->run(FORWARD);
+                }
+                else if(roll < 2.75 && roll > 1.75) {
+                    int angle = (roll - 1.75) * 255;
+                    R_MOTOR->setSpeed(constrain(angle, 0, 255));
+                    L_MOTOR->setSpeed(255);
+                    L_MOTOR->run(FORWARD);
+                    R_MOTOR->run(FORWARD);
+                }
+                // else if(roll < 1.75 && roll > 0) {
+                else {
+                    L_MOTOR->setSpeed(255);
+                    L_MOTOR->run(FORWARD);
+                    R_MOTOR->run(RELEASE);
+                }
+            }
+            else {
+                L_MOTOR->run(RELEASE);
+                R_MOTOR->run(RELEASE);
+            }
+            return;
+        }
+
         if(dev_count >= 3) {
             // Can possibly move this whole sensor assignment section out of the loop if it affects runtime
             // Not needed, but useful if works, can comment out this block to test other things since it isn't finished
