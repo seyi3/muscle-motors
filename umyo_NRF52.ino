@@ -14,6 +14,7 @@ uint32_t last_update_ms = 0;
 int leftHand_index = -1;
 int rightHand_index = -1;
 int brake_and_reverse_index = -1;
+bool isMoving = false;
 
 void setup() {
     Serial.begin(115200);
@@ -51,7 +52,7 @@ void loop() {
             Serial.println(roll);
             // int wrist = uMyo.getMuscleLevel(0);
             // if(wrist > THRESHOLD) {
-            if(true) {
+            if(isMoving) {
                 if(roll < 0 && roll > -1.75) {
                     R_MOTOR->setSpeed(255);
                     R_MOTOR->run(FORWARD);
@@ -66,10 +67,11 @@ void loop() {
                     
                 }
                 //else if ((roll < -2.75 && roll > -3.14) || (roll > 2.75 && roll < 3.14)) {
-                else if(roll < -2.75 || roll > 2.75) {
-                    L_MOTOR->setSpeed(255);
-                    L_MOTOR->run(FORWARD);
-                    R_MOTOR->run(FORWARD);
+                //@90
+                // else if(roll < -2.75 || roll > 2.75) {
+                //     L_MOTOR->setSpeed(255);
+                //     L_MOTOR->run(FORWARD);
+                //     R_MOTOR->run(FORWARD);
                 }
                 else if(roll < 2.75 && roll > 1.75) {
                     int angle = (roll - 1.75) * 255;
@@ -86,8 +88,40 @@ void loop() {
                 }
             }
             else {
-                L_MOTOR->run(RELEASE);
-                R_MOTOR->run(RELEASE);
+                              // --- STATIONARY LOGIC (Pivot Turns) ---
+              // Tilt right to pivot around the right wheel
+              if(roll < 0 && roll > -1.75) { 
+                  L_MOTOR->setSpeed(255);
+                  L_MOTOR->run(FORWARD);
+                  R_MOTOR->run(RELEASE); // Right wheel stays still
+              }
+              else if(roll < -1.75 && roll > -2.75) {
+                    int angle = ((roll * -1) - 1.75) * 255;
+                    L_MOTOR->setSpeed(constrain(angle, 0, 255));
+                    L_MOTOR->run(FORWARD);
+                    R_MOTOR->run(RELEASE); // Right wheel stays still
+
+                    
+                }
+
+              else if(roll < 2.75 && roll > 1.75) {
+                    int angle = (roll - 1.75) * 255;
+                    R_MOTOR->setSpeed(constrain(angle, 0, 255));
+                    R_MOTOR->run(FORWARD);
+                    L_MOTOR->run(RELEASE); // Left wheel stays still
+              }
+
+              // Tilt left to pivot around the left wheel
+              else if(roll < 1.75 && roll > 0) {
+                  R_MOTOR->setSpeed(255);
+                  R_MOTOR->run(FORWARD);
+                  L_MOTOR->run(RELEASE); // Left wheel stays still
+              }
+              // Deadzone: stay completely still
+              else {
+                  L_MOTOR->run(RELEASE);
+                  R_MOTOR->run(RELEASE);
+              }
             }
             return;
         }
