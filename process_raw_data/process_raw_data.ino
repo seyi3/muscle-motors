@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <arm_math.h>
 #include <stream_buffer.h>
+#include <queue.h>
 #include "uMyo_RF24.h"
 
 #define BLOCK_SIZE 32
@@ -10,14 +11,33 @@
 
 #define NUM_UMYO_DEVICES 3
 
+#define IMU_QUEUE_LENGTH 10
+
+#define DEBUG_IMU true
+#define DEBUG_EMG false
+
+#define SERIAL_PLOTTER_MIN -3.14
+#define SERIAL_PLOTTER_MAX 3.14
+
 StreamBufferHandle_t xRawDataBuffer;
 TaskHandle_t xPollRadioTaskHandle;
 
 uint8_t last_data_id = -1;
 bool first_packet = true;
 
+typedef struct {
+  uint8_t channel_id;
+  float32_t avg_muscle_level;
+  float avg_pitch;
+  float avg_roll;
+  float avg_yaw;
+} ProcessedData_t;
+
+QueueHandle_t xProcessedDataQueue;
+
 typedef struct{
   StreamBufferHandle_t xRawDataBuffer;
+  QueueHandle_t xImuDataQueue;
   uint8_t last_data_id; //= -1;
   bool first_packet; //= true;
 
@@ -33,7 +53,16 @@ typedef struct{
   arm_rfft_fast_instance_f32 fft_instance;
 
   float32_t avg_muscle_level;
+  float avg_pitch;
+  float avg_roll;
+  float avg_yaw;
 } Umyo_Channel_t;
+
+typedef struct {
+  float pitch;
+  float roll;
+  float yaw;
+} ImuData_t;
 
 Umyo_Channel_t channels[NUM_UMYO_DEVICES];
 
@@ -50,6 +79,7 @@ uint32_t last_processed_time_ms = 0;
 void poll_radio_task(void *pvParameters) {
   int16_t raw_data_int[SAMPLES_PER_PACKET];
   float32_t raw_data_float[SAMPLES_PER_PACKET];
+  ImuData_t imu_data;
 
   while (1) {
     uMyo.run();
@@ -70,6 +100,11 @@ void poll_radio_task(void *pvParameters) {
         }
 
         xStreamBufferSend(channel->xRawDataBuffer, raw_data_float, sizeof(raw_data_float), 0);
+
+        imu_data.pitch = uMyo.getPitch(i);
+        imu_data.roll = uMyo.getRoll(i);
+        imu_data.yaw = uMyo.getYaw(i);
+        xQueueSend(channel->xImuDataQueue, &imu_data, 0);
       }
     }
     vTaskDelay(pdMS_TO_TICKS(1));
@@ -79,6 +114,7 @@ void poll_radio_task(void *pvParameters) {
 void process_raw_data_task(void *pvParameters) {
   int id = (int)pvParameters;
   Umyo_Channel_t *channel = &channels[id];
+  ImuData_t imu_data;
   
   while (1) {
     size_t bytes_received = xStreamBufferReceive(channel->xRawDataBuffer, channel->raw_data_block, sizeof(channel->raw_data_block), portMAX_DELAY);
@@ -96,43 +132,136 @@ void process_raw_data_task(void *pvParameters) {
       channel->avg_muscle_level *= 0.9;
       channel->avg_muscle_level += 0.1 * (sum);
 
-      if (id == 0) {
-        float32_t a0 = 1.0;
-        float32_t b0 = 32;
-        float32_t v0 = (&channels[0])->avg_muscle_level - 1824;
-        float32_t v1 = (&channels[1])->avg_muscle_level - 1824;
-        float32_t cleaned = pow(v0, 2.0) / (a0 * v1 + b0);
-        cleaned = constrain(cleaned, 0, 2048);
-        bool thumb = cleaned > 512;
-        Serial.print("Thumb:");
-        Serial.print(thumb);
-        Serial.print(",Cleaned0:");
-        Serial.print(cleaned);
-      } else if (id == 1) {
-        float32_t a1 = 1.0;
-        float32_t b1 = 32;
-        float32_t v0 = (&channels[0])->avg_muscle_level - 1824;
-        float32_t v1 = (&channels[1])->avg_muscle_level - 1824;
-        float32_t cleaned = pow(v1, 2.0) / (a1 * v0 + b1);\
-        cleaned = constrain(cleaned, 0, 2048);
-        bool mrp = cleaned > 256;
-        Serial.print("MRP:");
-        Serial.print(mrp);
-        Serial.print(",Cleaned1:");
-        Serial.print(cleaned);
+      float sum_pitch = 0.0f;
+      float sum_roll  = 0.0f;
+      float sum_yaw   = 0.0f;
+      int imu_count   = 0;
+
+      while (xQueueReceive(channel->xImuDataQueue, &imu_data, 0) == pdTRUE) {
+        sum_pitch += imu_data.pitch;
+        sum_roll  += imu_data.roll;
+        sum_yaw   += imu_data.yaw;
+        imu_count++;
       }
-      
-      Serial.print(",Min:0,Max:1,");
-      Serial.print("Channel");
-      Serial.print(id);
-      Serial.print("Average:");
-      Serial.println(channel->avg_muscle_level - 1832);
+
+      if (imu_count > 0) {
+        float avg_pitch = sum_pitch / imu_count;
+        float avg_roll  = sum_roll / imu_count;
+        float avg_yaw   = sum_yaw / imu_count;
+        
+        channel->avg_pitch *= 0.9;
+        channel->avg_pitch += 0.1 * avg_pitch;
+
+        channel->avg_roll *= 0.9;
+        channel->avg_roll += 0.1 * avg_roll;
+
+        channel->avg_yaw *= 0.9;
+        channel->avg_yaw += 0.1 * avg_yaw;
+      }
+
+
+
+     
+      ProcessedData_t processed_data;
+      processed_data.channel_id = id;
+      processed_data.avg_muscle_level = channel->avg_muscle_level;
+      processed_data.avg_pitch = channel->avg_pitch;
+      processed_data.avg_roll = channel->avg_roll;
+      processed_data.avg_yaw = channel->avg_yaw;
+
+      //send to processed data queue
+      xQueueSend(xProcessedDataQueue, &processed_data, 0);
+    }
+  }
+}
+
+void central_logic_task(void *pvParameters) {
+  ProcessedData_t processed_data;
+  float32_t v0 = 0.0;
+  float32_t v1 = 0.0;
+
+  float32_t cleaned0 = 0.0;
+  float32_t cleaned1 = 0.0;
+
+  float32_t a0 = 1.0;
+  float32_t b0 = 32;
+
+  float32_t a1 = 1.0;
+  float32_t b1 = 32;
+
+  bool thumb = false;
+  bool mrp = false;
+
+  while(1) {
+    // Wait for a message from any channel
+    if (xQueueReceive(xProcessedDataQueue, &processed_data, portMAX_DELAY) == pdPASS) {
+      uint8_t channel_id = processed_data.channel_id;
+      float32_t avg_muscle_level = processed_data.avg_muscle_level;
+      float avg_pitch = processed_data.avg_pitch;
+      float avg_roll = processed_data.avg_roll;
+      float avg_yaw = processed_data.avg_yaw;
+
+      if (channel_id == 0) {
+        v0 = avg_muscle_level - 1850;
+      } else if (channel_id == 1) {
+        v1 = avg_muscle_level - 1850;
+      }
+
+      if (DEBUG_EMG || DEBUG_IMU) {
+        Serial.print("Min:");
+        Serial.print(SERIAL_PLOTTER_MIN);
+        Serial.print(",Max:");
+        Serial.print(SERIAL_PLOTTER_MAX);
+        Serial.print(",");
+      }
+
+      if (DEBUG_EMG) {
+        Serial.print("Channel");
+        Serial.print(channel_id);
+        Serial.print("Average:");
+        Serial.print(avg_muscle_level - 1850);
+        Serial.print(",");
+      }
+
+      if (DEBUG_IMU) {
+        Serial.print("AvgPitch"); 
+        Serial.print(channel_id);
+        Serial.print(":");
+        Serial.print(avg_pitch);
+        Serial.print(", AvgRoll"); 
+        Serial.print(channel_id);
+        Serial.print(":");
+        Serial.print(avg_roll);
+        Serial.print(", AvgYaw"); 
+        Serial.print(channel_id);
+        Serial.print(":");
+        Serial.print(avg_yaw);
+        Serial.print(",");
+      }
+
+      cleaned0 =  pow(v0, 2.0) / (a0 * v1 + b0);
+      cleaned0 = constrain(cleaned0, 0, 2048);
+      thumb = cleaned0 > 256;
+
+      cleaned1 = pow(v1, 2.0) / (a1 * v0 + b1);
+      cleaned1 = constrain(cleaned1, 0, 2048);
+      mrp = cleaned1 > 256;
+
+      Serial.print("Thumb:");
+      Serial.print(thumb);
+      Serial.print(",");
+      Serial.print("MRP:");
+      Serial.println(mrp);
     }
   }
 }
 
 void setup() {
   Serial.begin(115200);
+
+  while (!Serial) {
+    delay(10); 
+  }
 
   Serial.println("Initializing channels...");
 
@@ -151,6 +280,15 @@ void setup() {
       Serial.println("Halting program...");
       while(1);
     }
+
+    channel->xImuDataQueue = xQueueCreate(IMU_QUEUE_LENGTH, sizeof(ImuData_t));
+    if (channel->xImuDataQueue == NULL) {
+      Serial.print("Failed to create IMU queue for channel ");
+      Serial.println(i);
+      Serial.println("Halting program...");
+      while(1);
+    }
+
     arm_biquad_cascade_df1_init_f32(&channel->notch_filter_60Hz_instance, 1, notch_filter_60Hz_coeffs, channel->notch_filter_60Hz_state);
     arm_rfft_fast_init_f32(&channel->fft_instance, BLOCK_SIZE);
 
@@ -165,7 +303,10 @@ void setup() {
 
   uMyo.begin();
 
-  xTaskCreate(poll_radio_task, "PollRadio", 2048, NULL, 2, &xPollRadioTaskHandle);
+  xProcessedDataQueue = xQueueCreate(20, sizeof(ProcessedData_t));
+  xTaskCreate(central_logic_task, "LogicTask", 4096, NULL, 2, NULL);
+
+  xTaskCreate(poll_radio_task, "PollRadio", 2048, NULL, 3, &xPollRadioTaskHandle);
 
 
   Serial.println("Listening for uMyo packets...");
