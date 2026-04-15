@@ -3,6 +3,9 @@
 #include <stream_buffer.h>
 #include <queue.h>
 #include "uMyo_RF24.h"
+#include <SPI.h>
+#include <Wire.h>
+#include <Adafruit_MotorShield.h>
 
 #define BLOCK_SIZE 32
 #define BUFFER_SIZE BLOCK_SIZE * 2
@@ -24,6 +27,12 @@ TaskHandle_t xPollRadioTaskHandle;
 
 uint8_t last_data_id = -1;
 bool first_packet = true;
+
+typedef enum {
+  STATE_STOP,
+  STATE_FORWARD,
+  STATE_REVERSE
+} DriveState_t;
 
 typedef struct {
   uint8_t channel_id;
@@ -75,6 +84,10 @@ float32_t notch_filter_60Hz_coeffs[5] = {
 };
 
 uint32_t last_processed_time_ms = 0;
+
+Adafruit_MotorShield AFMS = Adafruit_MotorShield(); 
+Adafruit_DCMotor *L_MOTOR = AFMS.getMotor(4);
+Adafruit_DCMotor *R_MOTOR = AFMS.getMotor(3);
 
 void poll_radio_task(void *pvParameters) {
   int16_t raw_data_int[SAMPLES_PER_PACKET];
@@ -180,17 +193,21 @@ void central_logic_task(void *pvParameters) {
   float32_t v0 = 0.0;
   float32_t v1 = 0.0;
 
+  float32_t roll1 = 0.0;
+
   float32_t cleaned0 = 0.0;
   float32_t cleaned1 = 0.0;
 
-  float32_t a0 = 1.0;
+  float32_t a0 = 2.0;
   float32_t b0 = 32;
 
-  float32_t a1 = 1.0;
+  float32_t a1 = 2.0;
   float32_t b1 = 32;
 
   bool thumb = false;
   bool mrp = false;
+
+  DriveState_t state = STATE_STOP;
 
   while(1) {
     // Wait for a message from any channel
@@ -202,9 +219,9 @@ void central_logic_task(void *pvParameters) {
       float avg_yaw = processed_data.avg_yaw;
 
       if (channel_id == 0) {
-        v0 = avg_muscle_level - 1850;
+        v0 = avg_muscle_level - 1824;
       } else if (channel_id == 1) {
-        v1 = avg_muscle_level - 1850;
+        v1 = avg_muscle_level - 1824;
       }
 
       if (DEBUG_EMG || DEBUG_IMU) {
@@ -219,7 +236,13 @@ void central_logic_task(void *pvParameters) {
         Serial.print("Channel");
         Serial.print(channel_id);
         Serial.print("Average:");
-        Serial.print(avg_muscle_level - 1850);
+        Serial.print(avg_muscle_level - 1824);
+        Serial.print(",");
+        Serial.print("Score0:");
+        Serial.print(v0);
+        Serial.print(",");
+        Serial.print("Score1:");
+        Serial.print(v1);
         Serial.print(",");
       }
 
@@ -245,7 +268,55 @@ void central_logic_task(void *pvParameters) {
 
       cleaned1 = pow(v1, 2.0) / (a1 * v0 + b1);
       cleaned1 = constrain(cleaned1, 0, 2048);
-      mrp = cleaned1 > 256;
+      mrp = cleaned1 > 512;
+
+      if (channel_id) {
+        roll1 = avg_roll;
+      }
+
+      float32_t steer_left = constrain((2.2 - roll1), -0.5, 0.5)  + 0.5;
+      float32_t steer_right = constrain((roll1 - 2.2), -0.5, 0.5) + 0.5;
+
+      float32_t speed_left = steer_left * 127;
+      float32_t speed_right = steer_right * 127;
+
+      switch (state) {
+        case STATE_STOP:
+          if(thumb && !mrp) {
+            state = STATE_FORWARD;
+          }
+          break;
+        case STATE_FORWARD:
+          if(mrp && !thumb) {
+            state = STATE_STOP;
+          }
+          break;
+        case STATE_REVERSE:
+          break;
+      }
+
+      switch (state) {
+        case STATE_STOP:
+          L_MOTOR->setSpeed(0);
+          R_MOTOR->setSpeed(0);
+          L_MOTOR->run(RELEASE);
+          R_MOTOR->run(RELEASE);
+          break;
+        
+        case STATE_FORWARD: 
+          L_MOTOR->setSpeed(speed_left);
+          R_MOTOR->setSpeed(speed_right);
+          L_MOTOR->run(FORWARD);
+          R_MOTOR->run(FORWARD);
+          break;
+        
+        case STATE_REVERSE:
+          L_MOTOR->setSpeed(0);
+          R_MOTOR->setSpeed(0);
+          L_MOTOR->run(RELEASE);
+          R_MOTOR->run(RELEASE);
+          break;
+      }
 
       Serial.print("Thumb:");
       Serial.print(thumb);
@@ -258,10 +329,6 @@ void central_logic_task(void *pvParameters) {
 
 void setup() {
   Serial.begin(115200);
-
-  while (!Serial) {
-    delay(10); 
-  }
 
   Serial.println("Initializing channels...");
 
@@ -302,6 +369,16 @@ void setup() {
   }
 
   uMyo.begin();
+
+  if (!AFMS.begin()) {
+    Serial.println("Motor Shield not found!");
+    while (1);
+  }
+
+  L_MOTOR->setSpeed(0);
+  R_MOTOR->setSpeed(0);
+  L_MOTOR->run(RELEASE);
+  R_MOTOR->run(RELEASE);
 
   xProcessedDataQueue = xQueueCreate(20, sizeof(ProcessedData_t));
   xTaskCreate(central_logic_task, "LogicTask", 4096, NULL, 2, NULL);
