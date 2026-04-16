@@ -16,11 +16,11 @@
 
 #define IMU_QUEUE_LENGTH 10
 
-#define DEBUG_IMU true
-#define DEBUG_EMG false
+#define DEBUG_IMU false
+#define DEBUG_EMG true
 
-#define SERIAL_PLOTTER_MIN -3.14
-#define SERIAL_PLOTTER_MAX 3.14
+#define SERIAL_PLOTTER_MIN 0
+#define SERIAL_PLOTTER_MAX 1536
 
 StreamBufferHandle_t xRawDataBuffer;
 TaskHandle_t xPollRadioTaskHandle;
@@ -198,10 +198,10 @@ void central_logic_task(void *pvParameters) {
   float32_t cleaned0 = 0.0;
   float32_t cleaned1 = 0.0;
 
-  float32_t a0 = 2.0;
+  float32_t a0 = 1.0;
   float32_t b0 = 32;
 
-  float32_t a1 = 2.0;
+  float32_t a1 = 1.0;
   float32_t b1 = 32;
 
   bool thumb = false;
@@ -247,38 +247,46 @@ void central_logic_task(void *pvParameters) {
       }
 
       if (DEBUG_IMU) {
+        /*
         Serial.print("AvgPitch"); 
         Serial.print(channel_id);
         Serial.print(":");
         Serial.print(avg_pitch);
+        */
         Serial.print(", AvgRoll"); 
         Serial.print(channel_id);
         Serial.print(":");
         Serial.print(avg_roll);
+        /*
         Serial.print(", AvgYaw"); 
         Serial.print(channel_id);
         Serial.print(":");
         Serial.print(avg_yaw);
         Serial.print(",");
+        */
       }
 
       cleaned0 =  pow(v0, 2.0) / (a0 * v1 + b0);
       cleaned0 = constrain(cleaned0, 0, 2048);
-      thumb = cleaned0 > 256;
+      thumb = cleaned0 > 512;
 
       cleaned1 = pow(v1, 2.0) / (a1 * v0 + b1);
       cleaned1 = constrain(cleaned1, 0, 2048);
       mrp = cleaned1 > 512;
 
-      if (channel_id) {
-        roll1 = avg_roll;
+      if (channel_id == 1) {
+        roll1 = -avg_roll; 
       }
 
-      float32_t steer_left = constrain((2.2 - roll1), -0.5, 0.5)  + 0.5;
-      float32_t steer_right = constrain((roll1 - 2.2), -0.5, 0.5) + 0.5;
+      if ((roll1) < 0.1 && (roll1) > -0.1) {
+        roll1 = 0.0;
+      }
+      
+      float32_t steer_left = constrain((0 - roll1), -0.5, 0.5)  + 0.5;
+      float32_t steer_right = constrain((roll1 - (0)), -0.5, 0.5) + 0.5;
 
-      float32_t speed_left = steer_left * 127;
-      float32_t speed_right = steer_right * 127;
+      float32_t speed_left = steer_left * 191;
+      float32_t speed_right = steer_right * 191;
 
       switch (state) {
         case STATE_STOP:
